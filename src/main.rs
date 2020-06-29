@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use rand::Rng;
+use std::{thread, time};
 
 use pancurses::{initscr, endwin, Window, noecho, start_color, COLOR_CYAN, COLOR_BLACK, init_pair, COLOR_PAIR, Input};
 
@@ -9,6 +10,8 @@ const SCREEN_WIDTH: usize = 64;
 const SCREEN_HEIGHT: usize = 32;
 const NO_CURSES: bool = false;
 //const NO_CURSES: bool = true;
+//const BREAKPOINT: usize = 100;
+const BREAKPOINT: usize = 0;
 
 fn main() {
     let mut chip8 = Chip8::new();
@@ -33,12 +36,14 @@ struct Chip8 {
     stack_pointer: u8,
     screen: Vec<u8>,
     window: Window,
-    window_memory: Window,
+    debug_window: Window,
     display: Window,
     cycles: usize,
     timer: u8,
     keypad: Vec<u8>,
     sound_timer: u8,
+    logs: Vec<String>,
+    log_window: Window,
 }
 
 #[allow(dead_code)]
@@ -47,11 +52,13 @@ impl Chip8 {
 
     pub fn new() -> Chip8 {
         let window = initscr();
-        window.nodelay(false);
+        window.nodelay(true);
         noecho();
 
         let display = window.subwin(SCREEN_HEIGHT as i32, SCREEN_WIDTH as i32, 1, 100).unwrap();
-        let window_memory = window.subwin(50, 80, 0, 0).unwrap();
+        let debug_window = window.subwin(10, 80, 0, 0).unwrap();
+        let log_window = window.subwin(20, 50,20,  0).unwrap();
+        log_window.scrollok(true);
 
         start_color();
         init_pair(1, COLOR_CYAN, COLOR_BLACK);
@@ -66,17 +73,19 @@ impl Chip8 {
             screen: (0..=(SCREEN_WIDTH * SCREEN_HEIGHT)).map(|_| 0).collect(),
             window: window,
             display: display,
-            window_memory: window_memory,
             size: 0,
             cycles: 0,
             timer: 0,
             keypad: (0..=15).map(|_| 0).collect(),
             sound_timer: 0,
+            logs: Vec::new(),
+            debug_window: debug_window,
+            log_window: log_window,
         }
     }
 
     pub fn draw(&mut self) {
-        self.print_debug(0x200, Some(APP_START as usize + self.size));
+        self.print_debug();
         self.display.erase();
         for x in self.screen.iter() {
             if *x > 0 {
@@ -94,24 +103,27 @@ impl Chip8 {
             if !NO_CURSES {
                 self.draw();
             }
+            if BREAKPOINT > 0 && BREAKPOINT == self.cycles {
+                self.window.nodelay(false);
+            }
 
             match self.window.getch() {
                 Some(Input::KeyEnter) => break,
                 Some(Input::Character('1')) => { self.keypad[0] = 1; }
-                Some(Input::Character('2')) => { self.keypad[1] = 1; }
+                Some(Input::Character('w')) => { self.keypad[1] = 1; }
                 Some(Input::Character('3')) => { self.keypad[2] = 1; }
-                Some(Input::Character('C')) => { self.keypad[4] = 1; }
+                Some(Input::Character('s')) => { self.keypad[4] = 1; }
                 Some(Input::Character('4')) => { self.keypad[5] = 1; }
                 Some(Input::Character('5')) => { self.keypad[6] = 1; }
                 Some(Input::Character('6')) => { self.keypad[7] = 1; }
                 Some(Input::Character('7')) => { self.keypad[8] = 1; }
                 Some(Input::Character('8')) => { self.keypad[9] = 1; }
                 Some(Input::Character('9')) => { self.keypad[0xA] = 1; }
-                Some(Input::Character('E')) => { self.keypad[0xB] = 1; }
-                Some(Input::Character('A')) => { self.keypad[0xC] = 1; }
+                Some(Input::Character('e')) => { self.keypad[0xB] = 1; }
+                Some(Input::Character('a')) => { self.keypad[0xC] = 1; }
                 Some(Input::Character('0')) => { self.keypad[0xD] = 1; }
-                Some(Input::Character('B')) => { self.keypad[0xE] = 1; }
-                Some(Input::Character('F')) => { self.keypad[0xF] = 1; }
+                Some(Input::Character('b')) => { self.keypad[0xE] = 1; }
+                Some(Input::Character('f')) => { self.keypad[0xF] = 1; }
                 _ => ()
             }
 
@@ -158,55 +170,35 @@ impl Chip8 {
         Ok(())
     }
 
-    pub fn print_debug(&self, start_address: usize, end_address: Option<usize>) {
-        let mut c = 0;
-        let end_address = end_address.unwrap_or(self.memory.len());
-
-        self.window_memory.erase();
-
-        for i in start_address..end_address {
-            if c % 6 == 0 {
-                self.window_memory.addstr("\n");
-            }
-
-            let x = self.memory[i];
-
-            self.window_memory.addstr(format!("{:04X}: ", i));
-            if self.pc == i as u16 || (self.pc + 1) == i as u16 {
-                self.window_memory.attron(COLOR_PAIR(1));
-            } 
-
-            self.window_memory.addstr(format!("{:02X} ", x));
-            self.window_memory.attroff(COLOR_PAIR(1));
-
-            c += 1;
-        }
-
-        self.window_memory.addstr("\n");
-        self.window_memory.addstr("\n");
+    pub fn print_debug(&self) {
+        self.debug_window.erase();
 
         for i in 0..=0xF {
-            self.window_memory.addstr(format!("V{:X}: {:X} | ", i, self.registers[i]));
+            self.debug_window.addstr(format!("V{:X}: {:X} | ", i, self.registers[i]));
         }
-        self.window_memory.addstr("\n");
+        self.debug_window.addstr("\n");
         for i in 0..=0xF {
-            self.window_memory.addstr(format!("{:?}: {:?} | ", i, self.keypad[i]));
+            self.debug_window.addstr(format!("{:?}: {:?} | ", i, self.keypad[i]));
         }
 
-        self.window_memory.addstr("\n");
+        self.debug_window.addstr("\n");
 
-        self.window_memory.addstr(format!("pc {:X}\n", self.pc));
-        self.window_memory.addstr(format!("index {:X}\n", self.index));
-        self.window_memory.addstr(format!("cycles {:?}\n", self.cycles));
-        self.window_memory.addstr(format!("timer {:?}\n", self.timer));
+        self.debug_window.addstr(format!("pc {:X}\n", self.pc));
+        self.debug_window.addstr(format!("index {:X}\n", self.index));
+        self.debug_window.addstr(format!("cycles {:?}\n", self.cycles));
+        self.debug_window.addstr(format!("timer {:?}\n", self.timer));
 
         let opcode1 = self.memory[self.pc as usize];
         let opcode2 = self.memory[self.pc as usize + 1];
-        self.window_memory.addstr(format!("opcode {:02X}{:02X} \n", opcode1, opcode2));
+        self.debug_window.addstr(format!("opcode {:02X}{:02X} \n", opcode1, opcode2));
 
+        for log in self.logs.iter() {
+            self.log_window.addstr(log);
+            self.log_window.addstr("\n");
+        }
 
-
-        self.window_memory.refresh();
+        self.log_window.refresh();
+        self.debug_window.refresh();
     }
 
     fn cycle(&mut self) {
@@ -233,16 +225,20 @@ impl Chip8 {
         }
 
         self.execute_opcode(opcode);
+        let ten_millis = time::Duration::from_millis(1);
+        thread::sleep(ten_millis);
     }
 
     fn execute_opcode(&mut self, opcode: (u8, u8, u8, u8)) {
         match opcode {
             (0, 0, 0xE, 0xE) => {
                 // Return from a subroutine
+                self.logs.push(format!("{:04X}: 00EE\t RET", self.pc - 2));
                 self.pc = self.stack.pop().unwrap();
             },
             (1, n1, n2, n3) => {
                 // Jump to location nnn
+                self.logs.push(format!("{:04X}: {:X}{n1:X}{n2:X}{n3:X} \t JUMP {n1:X}{n2:X}{n3:X}", self.pc - 2, 1, n1=n1, n2=n2, n3=n3));
                 let addr: u16 = (n1 as u16) << 8 | (n2 as u16) << 4 | (n3 as u16);
                 self.pc = addr;
             },
@@ -251,12 +247,13 @@ impl Chip8 {
                 self.stack.push(self.pc);
                 let addr: u16 = (n1 as u16) << 8 | (n2 as u16) << 4 | (n3 as u16);
                 self.pc = addr;
+                self.logs.push(format!("{:04X}: {:X}{n1:X}{n2:X}{n3:X} \t CALL {n1:X}{n2:X}{n3:X}", self.pc - 2, 1, n1=n1, n2=n2, n3=n3));
             },
             (3, x, k1, k2) => {
                 //  Skip next instruction if Vx = kk.
                 let vx = self.registers[x as usize];
                 let kk: u8 = (k1 << 4) | k2; 
-
+                self.logs.push(format!("{:04X}: {:X}{n1:X}{n2:X}{n3:X} \t JE V{n1:X}, {n2:X}{n3:X}", self.pc - 2, 3, n1=x, n2=k1, n3=k2));
                 if vx == kk {
                     self.pc += 2;
                 }
@@ -266,6 +263,7 @@ impl Chip8 {
                 let vx = self.registers[x as usize];
                 let kk: u8 = (k1 << 4) | k2; 
 
+                self.logs.push(format!("{:04X}: {:X}{n1:X}{n2:X}{n3:X} \t JNE V{n1:X}, {n2:X}{n3:X}", self.pc - 2, 4, n1=x, n2=k1, n3=k2));
                 if vx != kk {
                     self.pc += 2;
                 }
@@ -274,26 +272,32 @@ impl Chip8 {
                 // Skip next instruction if Vx = Vy
                 let vx = self.registers[x as usize];
                 let vy = self.registers[y as usize];
+
+                self.logs.push(format!("{:04X}: {:X}{n1:X}{n2:X}{n3:X} \t JE V{n1:X}, V{n2:X}", self.pc - 2, 5, n1=x, n2=y, n3=0));
                 if vx == vy {
                     self.pc += 2;
                 }
             },
             (6, x, k1, k2) => {
                 // Vx = kk
+                self.logs.push(format!("{:04X}: {:X}{x:X}{k1:X}{k2:X} \t MOV V{x:X}, {k1:X}{k2:X}", self.pc - 2, 6, x=x, k1=k1, k2=k2));
                 let k: u8 = (k1 << 4) | k2; 
                 self.registers[x as usize] = k;
             },
             (7, x, k1, k2) => {
                 // Vx = Vx + kk
                 let kk: u8 = (k1 << 4) | k2; 
+                self.logs.push(format!("{:04X}: {:X}{x:X}{k1:X}{k2:X} \t ADD V{x:X}, {k1:X}{k2:X}", self.pc - 2, 7, x=x, k1=k1, k2=k2));
                 self.registers[x as usize] = (kk  as u16 + self.registers[x as usize] as u16) as u8;
             },
             (8, x, y, 0) => {
                 // Set Vx = Vy.
+                self.logs.push(format!("{:04X}: {:X}{x:X}{y:X}{k2:X} \t MOV V{x:X}, V{y:X}", self.pc - 2, 8, x=x, y=y, k2=0));
                 self.registers[x as usize] = self.registers[y as usize];
             },
             (8, x, y, 1) => {
                 // Set Vx = Vx OR Vy.
+                self.logs.push(format!("{:04X}: {:X}{x:X}{y:X}{k2:X} \t OR V{x:X}, V{y:X}", self.pc - 2, 8, x=x, y=y, k2=1));
                 let vx = self.registers[x as usize];
                 let vy = self.registers[y as usize];
 
@@ -301,13 +305,15 @@ impl Chip8 {
             },
             (8, x, y, 2) => {
                 // Vx = Vx AND Vy
+                self.logs.push(format!("{:04X}: {:X}{x:X}{y:X}{k2:X} \t AND V{x:X}, V{y:X}", self.pc - 2, 8, x=x, y=y, k2=2));
                 let vx = self.registers[x as usize];
                 let vy = self.registers[y as usize];
 
                 self.registers[x as usize] = vx & vy;
             },
             (8, x, y, 3) => {
-                // Vx = Vx AND Vy
+                // Vx = Vx XOR Vy
+                self.logs.push(format!("{:04X}: {:X}{x:X}{y:X}{k2:X} \t XOR V{x:X}, V{y:X}", self.pc - 2, 8, x=x, y=y, k2=3));
                 let vx = self.registers[x as usize];
                 let vy = self.registers[y as usize];
 
@@ -315,6 +321,7 @@ impl Chip8 {
             },
             (8, x, y, 4) => {
                 // Set Vx = Vx + Vy, set VF = carry.
+                self.logs.push(format!("{:04X}: {:X}{x:X}{y:X}{k2:X} \t ADC V{x:X}, V{y:X}", self.pc - 2, 8, x=x, y=y, k2=4));
                 let vx = self.registers[x as usize];
                 let vy = self.registers[y as usize];
                 let value: u16 = vx as u16 + vy as u16;
@@ -328,35 +335,41 @@ impl Chip8 {
             },
             (8, x, y, 5) => {
                 // Set Vx = Vx - Vy, set VF = NOT borrow.
+                self.logs.push(format!("{:04X}: {:X}{x:X}{y:X}{k2:X} \t SUB V{x:X}, V{y:X}", self.pc - 2, 8, x=x, y=y, k2=5));
                 let vx = self.registers[x as usize];
                 let vy = self.registers[y as usize];
-                self.registers[x as usize] = vx.wrapping_sub(vy);
 
                 if vx > vy {
                     self.registers[0xF] = 1
                 } else {
                     self.registers[x as usize] = 0;
                 }
+
+                self.registers[x as usize] = vx.wrapping_sub(vy);
             },
-            (8, x, _ , 6) => {
+            (8, x, k , 6) => {
                 // Set Vx = Vx SHR 1.
+                self.logs.push(format!("{:04X}: {:X}{x:X}{k1:X}{k2:X} \t SHR V{x:X}", self.pc - 2, 8, x=x, k1=k, k2=6));
                 self.registers[0xF] = self.registers[x as usize] & 0b0000_0001;
                 self.registers[x as usize] = self.registers[x as usize] >> 1;
             },
             (8, x, y, 7) => {
                 // Set Vx = Vy - Vx, set VF = NOT borrow.
+                self.logs.push(format!("{:04X}: {:X}{x:X}{y:X}{k2:X} \t SUBN V{x:X}, V{y:X}", self.pc - 2, 8, x=x, y=y, k2=7));
                 let vx = self.registers[x as usize];
                 let vy = self.registers[y as usize];
 
-                self.registers[x as usize] = vy - vx;
                 if vy > vx {
                     self.registers[0xF] = 1
                 } else {
                     self.registers[0xF] = 0
                 }
+
+                self.registers[x as usize] = vy - vx;
             },
-            (8, x,_ , 0xE) => {
+            (8, x, k, 0xE) => {
                 //  Set Vx = Vx SHL 1.
+                self.logs.push(format!("{:04X}: {:X}{x:X}{k1:X}{k2:X} \t SHL V{x:X}", self.pc - 2, 8, x=x, k1=k, k2=0xE));
                 self.registers[0xF] = self.registers[x as usize] >> 7;
                 self.registers[x as usize] = self.registers[x as usize] << 1;
             },
@@ -391,17 +404,17 @@ impl Chip8 {
                 let x = self.registers[x as usize];
                 let y = self.registers[y as usize];
 
+                self.registers[0xF] = 0;
                 for row in 0..n {
                     let sprite = self.memory[(self.index + row as u16)as usize];
+                    let y = (y as usize + row as usize)  % SCREEN_HEIGHT;
+
                     for column in 0..8 {
                         let pixel = (sprite >> (7 - column)) & 0b0000_0001;
-                        let y = (y as usize + row as usize)  % SCREEN_HEIGHT;
                         let x = (x as usize + column) % SCREEN_WIDTH;
                         let coordinates = (y * SCREEN_WIDTH) + x; 
-                        if pixel == 0 && self.screen[coordinates] == 1 {
-                            if self.screen[coordinates] == 1 {
-                                self.registers[0xF] = 1;
-                            } 
+                        if pixel == 1 && self.screen[coordinates] == 1 {
+                            self.registers[0xF] = 1;
                         }
 
                         self.screen[coordinates] ^= pixel;
@@ -424,6 +437,8 @@ impl Chip8 {
                 if self.keypad[vx as usize] == 0 {
                     self.pc += 2;
                 }
+
+                self.keypad[vx as usize] = 0;
             },
             (0xF, x, 1, 5) => {
                 // Set delay timer = Vx
@@ -445,14 +460,14 @@ impl Chip8 {
             (0xF, x, 2, 9) => {
                 // Set I = location of sprite for digit Vx.
                 let vx = self.registers[x as usize];
-                self.index = vx as u16 * 15 + Self::SPRITE_LOCATION as u16;
+                self.index = vx as u16 * 5 + Self::SPRITE_LOCATION as u16;
             },
             (0xF, x, 3, 3) => {
                 // Store BCD representation of Vx in memory locations I, I+1, and I+2.
                 let vx = self.registers[x as usize];
+                self.memory[self.index as usize] = vx / 100;
+                self.memory[self.index as usize + 1] = (vx % 100) / 10;
                 self.memory[self.index as usize + 2] = vx % 10;
-                self.memory[self.index as usize + 1] = (vx % 10) / 10;
-                self.memory[self.index as usize] = (vx % 10) / 100;
             },
             (0xF, x, 5, 5) => {
                 //  Store registers V0 through Vx in memory starting at location I.
