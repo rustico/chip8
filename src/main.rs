@@ -3,7 +3,13 @@ use std::io;
 use rand::Rng;
 use std::{thread, time};
 
-use pancurses::{initscr, endwin, Window, noecho, start_color, COLOR_CYAN, COLOR_BLACK, init_pair, Input};
+use sdl2::pixels::Color;
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::video::Window;
+use sdl2::render::Canvas;
+use sdl2::Sdl;
+use sdl2::rect::Rect;
 
 const APP_START: u16 = 0x200;
 const SCREEN_WIDTH: usize = 64;
@@ -18,16 +24,14 @@ fn main() {
     //let numero2 = 0xF;
     //let numero3 = numero <<  4 | numero2;
     //println!("{:x}", numero3);
-
     let mut chip8 = Chip8::new();
-    //chip8.load("pong.ch8").unwrap();
+    chip8.load("pong.ch8").unwrap();
     chip8.load("space.ch8").unwrap();
     //chip8.load("zero.ch8").unwrap();
     chip8.start();
 }
 
 
-#[derive(Debug)]
 struct Chip8 {
     registers: Vec<u8>,
     memory: Vec<u8>,
@@ -37,15 +41,13 @@ struct Chip8 {
     stack: Vec<u16>,
     stack_pointer: u8,
     screen: Vec<u8>,
-    window: Window,
-    debug_window: Window,
-    display: Window,
     cycles: usize,
     timer: u8,
     keypad: Vec<u8>,
     sound_timer: u8,
     logs: Vec<String>,
-    log_window: Window,
+    canvas: Canvas<Window>,
+    sdl_context: Sdl,
 }
 
 #[allow(dead_code)]
@@ -53,21 +55,20 @@ impl Chip8 {
     const SPRITE_LOCATION: u8 = 0x50;
 
     pub fn new() -> Chip8 {
-        let window = initscr();
-        window.nodelay(true);
-        noecho();
+        let sdl_context = sdl2::init().unwrap();
+        let video_subsystem = sdl_context.video().unwrap();
 
-        let display = window.subwin(SCREEN_HEIGHT as i32, SCREEN_WIDTH as i32, 1, 100).unwrap();
-        let debug_window = window.subwin(10, 80, 0, 0).unwrap();
-        let log_window = window.subwin(20, 50,20,  0).unwrap();
-        log_window.scrollok(true);
+        let window = video_subsystem.window("chip8", (SCREEN_WIDTH * 10) as u32, (SCREEN_HEIGHT * 10) as u32)
+            .position_centered()
+            .build()
+            .expect("could not initialize video subsystem");
 
-        start_color();
-        init_pair(1, COLOR_CYAN, COLOR_BLACK);
+        let mut canvas = window.into_canvas().build()
+            .expect("could not make a canvas");
 
-        if  NO_CURSES {
-            endwin();
-        }
+        canvas.set_draw_color(Color::RGB(0, 0, 0));
+        canvas.clear();
+        canvas.present();
 
         Chip8 {
             registers: (0..=15).map(|_| 0).collect(),
@@ -77,65 +78,72 @@ impl Chip8 {
             stack: Vec::with_capacity(16),
             stack_pointer: 0,
             screen: (0..=(SCREEN_WIDTH * SCREEN_HEIGHT)).map(|_| 0).collect(),
-            window,
-            display,
             size: 0,
             cycles: 0,
             timer: 0,
             keypad: (0..=15).map(|_| 0).collect(),
             sound_timer: 0,
             logs: Vec::new(),
-            debug_window,
-            log_window,
+            canvas,
+            sdl_context,
+
         }
     }
 
     pub fn draw(&mut self) {
-        self.print_debug();
-        self.display.erase();
-        for x in self.screen.iter() {
-            if *x > 0 {
-                self.display.addstr("#");
-            } else {
-                self.display.addstr("_");
+        //self.print_debug();
+        let mut x: i32 = 0;
+        let mut y: i32 = 0;
+        for i in self.screen.iter() {
+            if x >= SCREEN_WIDTH as i32 {
+                x = 0;
+                y += 1;
             }
+
+            if *i > 0 {
+                self.canvas.set_draw_color(Color::RGB(255, 255, 255));
+            } else {
+                self.canvas.set_draw_color(Color::RGB(0, 0, 0));
+            }
+
+            let display_x: i32 = x * 10;
+            let display_y: i32 = y * 10;
+            self.canvas.fill_rect(Rect::new(display_x, display_y, 10, 10));
+            x +=1;
         }
-        self.display.refresh();
     }
 
     pub fn start(&mut self) {
         self.load_fonts();
-        loop {
-            if !NO_CURSES {
-                self.draw();
+        let mut event_pump = self.sdl_context.event_pump().unwrap();
 
-                match self.window.getch() {
-                    Some(Input::KeyEnter) => break,
-                    Some(Input::Character('1')) => { self.keypad[0] = 1; } // 1
-                    Some(Input::Character('2')) => { self.keypad[1] = 1; } // 2
-                    Some(Input::Character('3')) => { self.keypad[2] = 1; } // 3
-                    Some(Input::Character('4')) => { self.keypad[4] = 1; } // C
-                    Some(Input::Character('q')) => { self.keypad[5] = 1; } // 4
-                    Some(Input::Character('w')) => { self.keypad[6] = 1; } // 5
-                    Some(Input::Character('e')) => { self.keypad[7] = 1; } // 5
-                    Some(Input::Character('r')) => { self.keypad[8] = 1; } // D
-                    Some(Input::Character('a')) => { self.keypad[9] = 1; } // 7
-                    Some(Input::Character('s')) => { self.keypad[0xA] = 1; } // 8
-                    Some(Input::Character('d')) => { self.keypad[0xB] = 1; } // 9
-                    Some(Input::Character('f')) => { self.keypad[0xC] = 1; } // E
-                    Some(Input::Character('z')) => { self.keypad[0xD] = 1; } // A
-                    Some(Input::Character('x')) => { self.keypad[0xE] = 1; } // 0
-                    Some(Input::Character('c')) => { self.keypad[0xF] = 1; } // B
-                    Some(Input::Character('v')) => { self.keypad[0x10] = 1; } // F
-                    _ => ()
+        'running: loop {
+            for event in event_pump.poll_iter() {
+                match event {
+                    Event::Quit {..} |
+                    Event::KeyDown { keycode: Some(Keycode::Escape), .. } => { break 'running; }
+                    Event::KeyDown { keycode: Some(Keycode::Num1), .. }  => { self.keypad[0] = 1; } // 1
+                    Event::KeyDown { keycode: Some(Keycode::Num2), .. } => { self.keypad[1] = 1; } // 2
+                    Event::KeyDown { keycode: Some(Keycode::Num3), .. } => { self.keypad[2] = 1; } // 3
+                    Event::KeyDown { keycode: Some(Keycode::Num4), .. } => { self.keypad[4] = 1; } // C
+                    Event::KeyDown { keycode: Some(Keycode::Q), .. } => { self.keypad[5] = 1; } // 4
+                    Event::KeyDown { keycode: Some(Keycode::W), .. } => { self.keypad[6] = 1; } // 5
+                    Event::KeyDown { keycode: Some(Keycode::E), .. } => { self.keypad[7] = 1; } // 5
+                    Event::KeyDown { keycode: Some(Keycode::R), .. } => { self.keypad[8] = 1; } // D
+                    Event::KeyDown { keycode: Some(Keycode::A), .. } => { self.keypad[9] = 1; } // 7
+                    Event::KeyDown { keycode: Some(Keycode::S), .. } => { self.keypad[0xA] = 1; } // 8
+                    Event::KeyDown { keycode: Some(Keycode::D), .. } => { self.keypad[0xB] = 1; } // 9
+                    Event::KeyDown { keycode: Some(Keycode::F), .. } => { self.keypad[0xC] = 1; } // E
+                    Event::KeyDown { keycode: Some(Keycode::Z), .. } => { self.keypad[0xD] = 1; } // A
+                    Event::KeyDown { keycode: Some(Keycode::X), .. } => { self.keypad[0xE] = 1; } // 0
+                    Event::KeyDown { keycode: Some(Keycode::C), .. } => { self.keypad[0xF] = 1; } // B
+                    Event::KeyDown { keycode: Some(Keycode::V), .. } => { self.keypad[0x10] = 1; } // F
+                    _ => {}
                 }
             }
 
-            if BREAKPOINT > 0 && BREAKPOINT == self.cycles {
-                self.window.nodelay(false);
-            }
-
-
+            self.draw();
+            self.canvas.present();
             self.cycle();
         }
     }
@@ -180,34 +188,30 @@ impl Chip8 {
     }
 
     pub fn print_debug(&self) {
-        self.debug_window.erase();
-
         for i in 0..=0xF {
-            self.debug_window.addstr(format!("V{:X}: {:X} | ", i, self.registers[i]));
-        }
-        self.debug_window.addstr("\n");
-        for i in 0..=0xF {
-            self.debug_window.addstr(format!("{:?}: {:?} | ", i, self.keypad[i]));
+            print!("V{:X}: {:X} | ", i, self.registers[i]);
         }
 
-        self.debug_window.addstr("\n");
+        println!("\n");
 
-        self.debug_window.addstr(format!("pc {:X}\n", self.pc));
-        self.debug_window.addstr(format!("index {:X}\n", self.index));
-        self.debug_window.addstr(format!("cycles {:?}\n", self.cycles));
-        self.debug_window.addstr(format!("timer {:?}\n", self.timer));
+        for i in 0..=0xF {
+           print!("{:?}: {:?} | ", i, self.keypad[i]);
+        }
+
+        println!("\n");
+
+        println!("pc {:X}\n", self.pc);
+        println!("index {:X}\n", self.index);
+        println!("cycles {:?}\n", self.cycles);
+        println!("timer {:?}\n", self.timer);
 
         let opcode1 = self.memory[self.pc as usize];
         let opcode2 = self.memory[self.pc as usize + 1];
-        self.debug_window.addstr(format!("opcode {:02X}{:02X} \n", opcode1, opcode2));
+        println!("opcode {:02X}{:02X} \n", opcode1, opcode2);
 
         for log in self.logs.iter() {
-            self.log_window.addstr(log);
-            self.log_window.addstr("\n");
+          println!("{:?}", log);
         }
-
-        self.log_window.refresh();
-        self.debug_window.refresh();
     }
 
     fn cycle(&mut self) {
@@ -234,8 +238,6 @@ impl Chip8 {
         }
 
         self.execute_opcode(opcode);
-        let ten_millis = time::Duration::from_millis(1);
-        thread::sleep(ten_millis);
     }
 
     fn execute_opcode(&mut self, opcode: (u8, u8, u8, u8)) {
@@ -526,11 +528,5 @@ impl Chip8 {
             }
         }
 
-    }
-}
-
-impl Drop for Chip8 {
-    fn drop(&mut self) {
-        endwin();
     }
 }
